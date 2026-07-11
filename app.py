@@ -1,7 +1,18 @@
 """
-Simulador de Comportamiento Mecánico de Materiales — v3
+Simulador de Comportamiento Mecánico de Materiales — v4
 =========================================================
-Novedades v3:
+Novedades v4 (sobre v3):
+  - Base de datos de Composición Química Teórica (C, Mn, Ni, Cr, Mo, Cu, V)
+    extraída de ASME Sección II Parte A / AISI, con cálculo automático del
+    Carbono Equivalente: CE = C + Mn/6 + (Cr+Mo+V)/5 + (Ni+Cu)/15.
+  - Sliders de %C y %Mn para los aceros no aleados: ambos alimentan la
+    Composición Teórica, el CE y la Temperatura de Transición Charpy
+    (Ttrans = Ttrans_base + 140·%C − 55·%Mn).
+  - Bloque de seguridad ampliado: alerta de clivaje, alerta de creep
+    (Ttrab > 370°C) y límite de prueba (90% de σy).
+  - Cierre fijo de la app: "MIRAR + CONOCIMIENTO TÉCNICO = VER".
+
+Novedades v3 (heredadas):
   - Determinación DINÁMICA de fase para aceros no aleados según el
     diagrama Fe-C (A1 = 727°C, A3 = 910 - 230·%C).
   - 4 categorías de material: No Aleados / Alta Resistencia (4140-4340,
@@ -9,11 +20,10 @@ Novedades v3:
   - Curvas armónicas (Ludwik/Hollomon + Bridgman) sin tramos rectos
     artificiales; Charpy con tanh de alta resolución (BCC y HCP),
     saturación suave (FCC) y meseta baja (Martensita).
-
 "MIRAR + CONOCIMIENTO TÉCNICO = VER"
 """
-
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -29,6 +39,7 @@ N_POINTS = 500        # resolución fina para curvas armónicas
 # Ejes fijos para comparación visual entre materiales/condiciones
 SIGMA_EPS_XRANGE = [0.0, 0.6]       # deformación
 SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo del eje más amplio
+
 # Rango fijo del eje de tensión, calibrado por categoría (según el máximo real que
 # alcanza cada familia en el modelo, con margen): así cada una usa su propia escala
 # sin quedar aplastada por la de otra.
@@ -38,22 +49,25 @@ RANGOS_SIGMA_POR_CATEGORIA = {
     "Aceros Inoxidables": [0.0, 1000.0],
     "Materiales H.C.P.": [0.0, 650.0],
 }
+
 CHARPY_XRANGE = [-200.0, 300.0]      # °C
 CHARPY_YRANGE = [0.0, 350.0]         # J
 TTRANS_REF_J = 20.0                   # energía que define la Temperatura de Transición
 T_CREEP = 370.0                        # °C, umbral de daño por fluencia lenta
-
 A1_TEMP = 727.0   # °C, línea eutectoide del diagrama Fe-C
+TTRANS_BASE_BCC = 0.0   # °C, término independiente de la fórmula de Ttrans para BCC
 
 # ----------------------------------------------------------------------
-# BASES DE DATOS
+# BASES DE DATOS — PROPIEDADES MECÁNICAS
 # ----------------------------------------------------------------------
 GRADOS_NO_ALEADOS = {
-    "SA-516 Gr 60": {"sy": 220.0, "su": 415.0},
-    "SA-516 Gr 70": {"sy": 260.0, "su": 485.0},
-    "SA-515 Gr 60": {"sy": 220.0, "su": 400.0},
-    "SA-515 Gr 65": {"sy": 240.0, "su": 450.0},
-    "SA-515 Gr 70": {"sy": 260.0, "su": 485.0},
+    # sy/su: MPa mínimos de norma. c_base/mn_base: valores teóricos típicos de
+    # composición (ASME Sección II Parte A), usados como default de los sliders.
+    "SA-516 Gr 60": {"sy": 220.0, "su": 415.0, "c_base": 0.24, "mn_base": 0.90},
+    "SA-516 Gr 70": {"sy": 260.0, "su": 485.0, "c_base": 0.28, "mn_base": 1.00},
+    "SA-515 Gr 60": {"sy": 220.0, "su": 415.0, "c_base": 0.24, "mn_base": 0.70},
+    "SA-515 Gr 65": {"sy": 240.0, "su": 450.0, "c_base": 0.26, "mn_base": 0.75},
+    "SA-515 Gr 70": {"sy": 260.0, "su": 485.0, "c_base": 0.28, "mn_base": 0.80},
 }
 
 # AISI 4140 / 4340 — martensita revenida, resistencia depende de T° de revenido
@@ -89,6 +103,75 @@ ESTRUCTURA_DESC = {
     "mart": "Martensita Revenida",
     "hcp": "Hexagonal Compacta (HCP)",
 }
+
+# ----------------------------------------------------------------------
+# BASE DE DATOS — COMPOSICIÓN QUÍMICA TEÓRICA (ASME Sección II Parte A / AISI)
+# ----------------------------------------------------------------------
+# Valores fijos de composición para los grados que NO se ajustan por slider
+# (Alta Resistencia e Inoxidables). C y Mn de los no aleados son dinámicos
+# (provienen de los sliders) y se arman más abajo, en el bloque del sidebar.
+COMPOSICION_ALTA_RESISTENCIA = {
+    "AISI 4140": {"C": 0.40, "Mn": 0.87, "Ni": 0.00, "Cr": 0.95, "Mo": 0.20, "Cu": 0.00, "V": 0.00},
+    "AISI 4340": {"C": 0.40, "Mn": 0.70, "Ni": 1.83, "Cr": 0.80, "Mo": 0.25, "Cu": 0.00, "V": 0.00},
+}
+COMPOSICION_INOXIDABLES = {
+    "AISI 304": {"C": 0.06, "Mn": 1.50, "Ni": 9.00, "Cr": 19.00, "Mo": 0.00, "Cu": 0.00, "V": 0.00},
+    "AISI 316": {"C": 0.06, "Mn": 1.50, "Ni": 12.00, "Cr": 17.00, "Mo": 2.50, "Cu": 0.00, "V": 0.00},
+}
+# Materiales H.C.P.: no son aleaciones Fe-C, se muestran como metal base ~puro
+# (con trazas típicas de grado comercial). El CE no aplica.
+COMPOSICION_HCP = {
+    "Zinc (Zn)": {"Elemento base": "Zn", "Pureza teórica": 99.90, "Principales trazas": "Pb, Cd, Fe"},
+    "Berilio (Be)": {"Elemento base": "Be", "Pureza teórica": 99.00, "Principales trazas": "BeO, Fe, Al"},
+    "Titanio α (Ti-CP)": {"Elemento base": "Ti", "Pureza teórica": 99.20, "Principales trazas": "O, Fe, N"},
+}
+
+
+def calcular_carbono_equivalente(comp: dict) -> float:
+    """CE = C + Mn/6 + (Cr+Mo+V)/5 + (Ni+Cu)/15 — fórmula IIW clásica."""
+    return (
+        comp["C"]
+        + comp["Mn"] / 6.0
+        + (comp["Cr"] + comp["Mo"] + comp["V"]) / 5.0
+        + (comp["Ni"] + comp["Cu"]) / 15.0
+    )
+
+
+def mostrar_bloque_composicion(nombre_material: str, comp: dict, es_acero: bool = True):
+    """Bloque informativo con la Composición Química Teórica y el Carbono Equivalente."""
+    st.markdown("### 🧪 Composición Química Teórica")
+    col_tabla, col_ce = st.columns([2, 1])
+
+    if es_acero:
+        df_comp = pd.DataFrame(
+            {
+                "Elemento": ["C", "Mn", "Ni", "Cr", "Mo", "Cu", "V"],
+                "% en Peso": [
+                    f"{comp['C']:.2f}", f"{comp['Mn']:.2f}", f"{comp['Ni']:.2f}",
+                    f"{comp['Cr']:.2f}", f"{comp['Mo']:.2f}", f"{comp['Cu']:.2f}", f"{comp['V']:.2f}",
+                ],
+            }
+        )
+        with col_tabla:
+            st.table(df_comp.set_index("Elemento"))
+        ce = calcular_carbono_equivalente(comp)
+        with col_ce:
+            st.metric("Carbono Equivalente (CE)", f"{ce:.3f}")
+            if ce < 0.40:
+                st.success("Buena soldabilidad: bajo riesgo de fisuración en frío, sin precalentamiento crítico.")
+            elif ce < 0.60:
+                st.warning("Soldabilidad moderada: se recomienda precalentamiento y control de aporte térmico.")
+            else:
+                st.error("Baja soldabilidad: alto riesgo de fisuración en frío (HAZ). Precalentamiento obligatorio.")
+    else:
+        df_comp = pd.DataFrame([comp])
+        with col_tabla:
+            st.table(df_comp.T.rename(columns={0: "Valor"}))
+        with col_ce:
+            st.info(
+                "El Carbono Equivalente (CE) es una fórmula metalúrgica de soldabilidad "
+                "válida para aceros Fe-C; no aplica a metales no ferrosos H.C.P."
+            )
 
 
 # ----------------------------------------------------------------------
@@ -129,7 +212,6 @@ def ajustar_por_temperatura(sy, su, e_max, ttrab, familia):
         else:
             factor_resist = 1 + 0.0009 * delta
             factor_duct = max(0.05, 1 - 0.0060 * delta)
-
     sy_f = sy * factor_resist
     su_f = max(su * factor_resist, sy_f * 1.02)
     su_f = min(su_f, SIGMA_CLIP)
@@ -211,7 +293,6 @@ def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.
 
     stress_eng = np.minimum(stress_eng, SIGMA_CLIP)
     stress_true = np.minimum(stress_true, SIGMA_CLIP)
-
     return strain, stress_eng, stress_true, e_u_eng, e_y, True
 
 
@@ -226,11 +307,12 @@ def _tanh_con_ttrans_en_20j(temps, t_trans, ancho, use, lse):
     return (use + lse) / 2 + (use - lse) / 2 * np.tanh((temps - t0) / ancho)
 
 
-def generar_curva_charpy(familia, pc=None, charpy_ref=None, hcp_info=None):
+def generar_curva_charpy(familia, pc=None, pm=0.0, charpy_ref=None, hcp_info=None):
     temps = np.linspace(CHARPY_XRANGE[0], CHARPY_XRANGE[1], N_POINTS)
 
     if familia == "bcc":
-        t_trans = -60.0 + 140.0 * (pc - 0.10)               # +14°C cada 0.1%C
+        # Ttrans = Ttrans_base + 140·%C − 55·%Mn (definida en el punto de 20 J)
+        t_trans = TTRANS_BASE_BCC + 140.0 * pc - 55.0 * pm
         ancho = 25.0 + 25.0 * ((pc - 0.10) / 0.70)
         use = 300.0 - 180.0 * ((pc - 0.10) / 0.70)
         lse = 10.0
@@ -274,16 +356,22 @@ categoria = st.sidebar.selectbox(
 
 if categoria == "Aceros No Aleados":
     grado_base = st.sidebar.selectbox("Grado base (Norma ASME)", list(GRADOS_NO_ALEADOS.keys()))
-    pct_c = st.sidebar.slider("Contenido de Carbono (%C)", 0.01, 0.80, 0.20, 0.01, format="%.2f %%")
+    base = GRADOS_NO_ALEADOS[grado_base]
+
+    pct_c = st.sidebar.slider("Contenido de Carbono (%C)", 0.01, 0.80, base["c_base"], 0.01, format="%.2f %%")
+    pct_mn = st.sidebar.slider("Contenido de Manganeso (%Mn)", 0.10, 2.00, base["mn_base"], 0.05, format="%.2f %%")
     ttrab = st.sidebar.number_input(
         "Temperatura de Trabajo (Ttrab) [°C]", min_value=-200, max_value=1000, value=20, step=5
     )
 
-    base = GRADOS_NO_ALEADOS[grado_base]
     sy_c, su_c, e_max_c, n_hard = ajustar_por_carbono_bcc(base["sy"], base["su"], pct_c)
-
     fase, a3 = determinar_fase_fe_c(ttrab, pct_c)
-    nombre_material = f"{grado_base} (%C = {pct_c:.2f}%)"
+    nombre_material = f"{grado_base} (%C = {pct_c:.2f}% · %Mn = {pct_mn:.2f}%)"
+
+    # Composición teórica (dinámica: refleja los sliders de %C y %Mn; el resto
+    # son elementos residuales, no aleados intencionalmente en estos grados)
+    comp_actual = {"C": pct_c, "Mn": pct_mn, "Ni": 0.00, "Cr": 0.00, "Mo": 0.00, "Cu": 0.00, "V": 0.00}
+    es_acero_actual = True
 
     if fase == "bcc":
         sy_final, su_final, e_max_final = ajustar_por_temperatura(sy_c, su_c, e_max_c, ttrab, "bcc")
@@ -305,7 +393,7 @@ if categoria == "Aceros No Aleados":
         familia_calculo = "fcc"
         charpy_ref = 150.0
 
-    temps, energia, t_trans = generar_curva_charpy(familia_calculo, pc=pct_c, charpy_ref=charpy_ref)
+    temps, energia, t_trans = generar_curva_charpy(familia_calculo, pc=pct_c, pm=pct_mn, charpy_ref=charpy_ref)
 
 elif categoria == "Aceros Aleados de Alta Resistencia":
     grado_aleado = st.sidebar.selectbox("Grado", list(GRADOS_ALTA_RESISTENCIA.keys()))
@@ -326,6 +414,9 @@ elif categoria == "Aceros Aleados de Alta Resistencia":
     nombre_material = f"{grado_aleado} (revenido a {t_revenido}°C)"
     temps, energia, t_trans = generar_curva_charpy("mart", charpy_ref=charpy_ref)
 
+    comp_actual = COMPOSICION_ALTA_RESISTENCIA[grado_aleado]
+    es_acero_actual = True
+
 elif categoria == "Aceros Inoxidables":
     grado_inox = st.sidebar.selectbox("Grado", list(GRADOS_INOXIDABLES.keys()))
     ttrab = st.sidebar.number_input(
@@ -338,6 +429,9 @@ elif categoria == "Aceros Inoxidables":
     nombre_material = f"Inoxidable {grado_inox} (F.C.C.)"
     temps, energia, t_trans = generar_curva_charpy("fcc", charpy_ref=info["charpy_J"])
 
+    comp_actual = COMPOSICION_INOXIDABLES[grado_inox]
+    es_acero_actual = True
+
 else:  # Materiales H.C.P.
     grado_hcp = st.sidebar.selectbox("Material", list(MATERIALES_HCP.keys()))
     ttrab = st.sidebar.number_input(
@@ -349,6 +443,9 @@ else:  # Materiales H.C.P.
     fase = "hcp"
     nombre_material = f"{grado_hcp} (H.C.P.)"
     temps, energia, t_trans = generar_curva_charpy("hcp", hcp_info=info)
+
+    comp_actual = COMPOSICION_HCP[grado_hcp]
+    es_acero_actual = False
 
 energia_ttrab = energia_en_temperatura(temps, energia, ttrab)
 
@@ -391,6 +488,13 @@ c3.metric("Alargamiento a rotura", f"{e_max_final*100:,.1f} %")
 st.markdown("---")
 
 # ----------------------------------------------------------------------
+# BLOQUE — COMPOSICIÓN QUÍMICA TEÓRICA Y CARBONO EQUIVALENTE
+# ----------------------------------------------------------------------
+mostrar_bloque_composicion(nombre_material, comp_actual, es_acero=es_acero_actual)
+
+st.markdown("---")
+
+# ----------------------------------------------------------------------
 # GRÁFICO 1 — TENSIÓN vs DEFORMACIÓN
 # ----------------------------------------------------------------------
 st.subheader("1️⃣ Curva Tensión – Deformación (σ vs ε)")
@@ -427,20 +531,16 @@ with st.expander("📘 Fundamento teórico — Curva σ-ε armónica"):
     st.markdown(
         r"""
 **Zona elástica:** Ley de Hooke, $\sigma = E \cdot \varepsilon$, hasta $\sigma_y$.
-
 **Zona plástica uniforme:** ecuación de Ludwik (variante de Hollomon con offset
 de fluencia): $\sigma_{real} = \sigma_y + K \cdot \varepsilon_{p}^{\,n}$. El punto
 de carga máxima (UTS) se ubica, por el criterio de Considère, donde
 $\varepsilon_{p} \approx n$.
-
 **Post-estricción:** la tensión convencional decae suavemente por la reducción
 real de sección; la tensión real sigue creciendo, corregida por el estado
 triaxial de tensiones en el cuello (aproximación tipo Bridgman/Von Mises).
-
 **Aceros al Carbono (no aleados):** el %C sube σy y σu, pero reduce fuertemente
 la ductilidad. **AISI 4140/4340:** la resistencia (hasta ~1970-2000 MPa) depende
 de la temperatura de revenido del tratamiento térmico, no de Ttrab.
-
 > *"Mirar + Conocimiento Técnico = Ver"* — la **inspección visual** de la
 > probeta (estricción, superficie de fractura) confirma si el comportamiento
 > fue dúctil o frágil.
@@ -479,7 +579,6 @@ else:
         f"⚠️ Ttrab ({ttrab} °C) está fuera del rango típico de ensayo Charpy "
         f"({CHARPY_XRANGE[0]:.0f} a {CHARPY_XRANGE[1]:.0f} °C) y no se marca en el gráfico."
     )
-
 fig2.update_layout(
     xaxis=dict(title="Temperatura [°C]", range=CHARPY_XRANGE),
     yaxis=dict(title="Energía Absorbida [J]", range=CHARPY_YRANGE),
@@ -494,15 +593,13 @@ with st.expander("📘 Fundamento teórico — Curva Charpy armónica"):
 **B.C.C. (no aleados) y H.C.P. (Zn, Be, Ti-α):** ambas presentan transición
 dúctil-frágil (tanh de alta resolución). La **Temperatura de Transición**
 ($T_{trans}$) se define donde la energía absorbida alcanza **20 J**. En los
-no aleados, el %C desplaza la curva **+14°C por cada 0.1%C**. Los H.C.P.
+no aleados, $T_{trans} = T_{trans,base} + 140\cdot\%C - 55\cdot\%Mn$: el
+carbono la sube y el **manganeso la baja** (mejora la tenacidad). Los H.C.P.
 transicionan por tener solo **2 sistemas de deslizamiento** disponibles.
-
 **F.C.C. (inoxidables 304/316):** sin clivaje, energía siempre alta (>120 J),
 con saturación suave — no existe transición dúctil-frágil real.
-
 **Martensíticos (AISI 4140/4340):** tenacidad baja y prácticamente constante
 (<20 J): son intrínsecamente frágiles, independientemente de Ttrab.
-
 > *"Mirar + Conocimiento Técnico = Ver"* — la superficie de fractura de la
 > probeta Charpy (brillante/cristalina = frágil vs. fibrosa/mate = dúctil) es
 > el primer diagnóstico visual, previo a cualquier cálculo.
@@ -513,13 +610,14 @@ con saturación suave — no existe transición dúctil-frágil real.
 # FUNDAMENTOS DE SEGURIDAD
 # ----------------------------------------------------------------------
 st.markdown("---")
-st.subheader("🚨 Fundamentos de Seguridad")
+st.subheader("🚨 Diagnóstico de Seguridad Estructural")
 
+# --- Alerta de Clivaje (BCC / mixta / HCP) ---
 if fase in ("bcc", "mixta", "hcp"):
     if t_trans is not None and ttrab < t_trans:
         st.error(
-            f"⚠️ **Peligro de Rotura por Clivaje** — Ttrab ({ttrab} °C) está por "
-            f"debajo de Ttrans ({t_trans:.0f} °C)."
+            f"⚠️ **CRÍTICO: Riesgo de fractura frágil por clivaje** — Ttrab ({ttrab} °C) "
+            f"está por debajo de Ttrans ({t_trans:.0f} °C)."
             + (f" Energía absorbida estimada: {energia_ttrab:.0f} J." if energia_ttrab is not None else "")
         )
     else:
@@ -540,15 +638,35 @@ else:  # martensita
         "defectos y concentradores de tensión, sin importar Ttrab."
     )
 
+# --- Alerta de Creep (Fluencia Lenta) ---
 if ttrab > T_CREEP:
     st.warning(
         f"🔥 **Mecanismo de Daño por Creep (Fluencia Lenta)** — Ttrab ({ttrab} °C) "
         f"supera los {T_CREEP:.0f} °C: el material puede sufrir deformación "
-        f"progresiva bajo carga sostenida, independientemente del ensayo de impacto."
+        f"progresiva bajo carga sostenida. Se recomiendan **réplicas metalográficas** "
+        f"periódicas in situ para monitorear cavitación y daño por creep, "
+        f"independientemente del resultado del ensayo de impacto."
     )
+
+# --- Límite de Prueba (90% de σy) ---
+limite_prueba = 0.90 * sy_final
+st.info(
+    f"🛑 **Límite de Prueba (Ensayo No Destructivo / Prueba Hidráulica)** — la tensión "
+    f"aplicada durante cualquier prueba de carga no debe superar el **90% de σy** "
+    f"({limite_prueba:,.0f} MPa) para evitar deformación permanente del componente."
+)
 
 st.caption(
     "Modelo didáctico simplificado con fines educativos — los valores numéricos "
     "no reemplazan ensayos normalizados (ASTM E8, ASTM E23) ni códigos de diseño "
     "(ASME, API)."
+)
+
+# ----------------------------------------------------------------------
+# CIERRE
+# ----------------------------------------------------------------------
+st.markdown("---")
+st.markdown(
+    "<h3 style='text-align:center;color:#1f77b4;'>👁️ MIRAR + CONOCIMIENTO TÉCNICO = VER</h3>",
+    unsafe_allow_html=True,
 )
