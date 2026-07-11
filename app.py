@@ -28,8 +28,16 @@ N_POINTS = 500        # resolución fina para curvas armónicas
 
 # Ejes fijos para comparación visual entre materiales/condiciones
 SIGMA_EPS_XRANGE = [0.0, 0.6]       # deformación
-SIGMA_EPS_YRANGE = [0.0, 2000.0]    # MPa (ampliado para cubrir martensita revenida hasta ~1970 MPa)
-SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo del eje
+SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo del eje más amplio
+# Rango fijo del eje de tensión, calibrado por categoría (según el máximo real que
+# alcanza cada familia en el modelo, con margen): así cada una usa su propia escala
+# sin quedar aplastada por la de otra.
+RANGOS_SIGMA_POR_CATEGORIA = {
+    "Aceros No Aleados": [0.0, 900.0],
+    "Aceros Aleados de Alta Resistencia": [0.0, 2100.0],
+    "Aceros Inoxidables": [0.0, 650.0],
+    "Materiales H.C.P.": [0.0, 650.0],
+}
 CHARPY_XRANGE = [-200.0, 300.0]      # °C
 CHARPY_YRANGE = [0.0, 350.0]         # J
 TTRANS_REF_J = 20.0                   # energía que define la Temperatura de Transición
@@ -346,8 +354,8 @@ energia_ttrab = energia_en_temperatura(temps, energia, ttrab)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Los ejes de ambos gráficos están fijos para permitir comparar directamente "
-    "distintos materiales y condiciones."
+    "El eje de deformación y el gráfico Charpy están fijos entre categorías; el "
+    "eje de tensión tiene un rango fijo propio de cada categoría de material."
 )
 
 # ----------------------------------------------------------------------
@@ -409,7 +417,7 @@ fig1.add_trace(go.Scatter(
 ))
 fig1.update_layout(
     xaxis=dict(title="Deformación ε [mm/mm]", range=SIGMA_EPS_XRANGE),
-    yaxis=dict(title="Tensión σ [MPa]", range=SIGMA_EPS_YRANGE),
+    yaxis=dict(title="Tensión σ [MPa]", range=RANGOS_SIGMA_POR_CATEGORIA[categoria]),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
     height=500, margin=dict(t=30),
 )
