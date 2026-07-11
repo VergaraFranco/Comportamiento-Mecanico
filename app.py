@@ -35,7 +35,7 @@ SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo de
 RANGOS_SIGMA_POR_CATEGORIA = {
     "Aceros No Aleados": [0.0, 900.0],
     "Aceros Aleados de Alta Resistencia": [0.0, 2100.0],
-    "Aceros Inoxidables": [0.0, 650.0],
+    "Aceros Inoxidables": [0.0, 1000.0],
     "Materiales H.C.P.": [0.0, 650.0],
 }
 CHARPY_XRANGE = [-200.0, 300.0]      # °C
