@@ -1,12 +1,14 @@
 """
-Simulador de Comportamiento Mecánico de Materiales
-====================================================
-Aplicación educativa en Streamlit para visualizar:
-  1. Curva Tensión-Deformación (convencional y real)
-  2. Curva de Transición Dúctil-Frágil (Ensayo Charpy)
+Simulador de Comportamiento Mecánico de Materiales — v2
+=========================================================
+Curvas armónicas (sin tramos rectos artificiales):
+  - Zona plástica uniforme: ecuación de Ludwik/Hollomon (σ = σy + K·εp^n)
+  - Post-estricción: decaimiento suave (smoothstep) en tensión convencional
+    y corrección por triaxialidad (tipo Bridgman) en tensión real.
+  - Charpy: tanh de alta resolución (BCC), curva de saturación (FCC),
+    y meseta baja (martensíticos).
 
-Basado en apuntes de cátedra de Ingeniería de Materiales / Metalurgia.
-Los modelos son simplificaciones didácticas, no valores de norma exactos.
+"MIRAR + CONOCIMIENTO TÉCNICO = VER"
 """
 
 import numpy as np
@@ -16,205 +18,270 @@ import streamlit as st
 # ----------------------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
 # ----------------------------------------------------------------------
-st.set_page_config(
-    page_title="Simulador Mecánico de Materiales",
-    page_icon="🔩",
-    layout="wide",
-)
+st.set_page_config(page_title="Simulador Mecánico de Materiales", page_icon="🔩", layout="wide")
 
-E_MOD = 210_000.0  # Módulo de Young acero, MPa
+E_MOD = 210_000.0     # Módulo de Young, MPa (aceros)
+C_REF = 0.20          # %C de referencia de los grados ASME base
+N_POINTS = 500        # resolución fina para curvas armónicas
+
+# Ejes fijos para comparación visual entre materiales/condiciones
+SIGMA_EPS_XRANGE = [0.0, 0.6]      # deformación
+SIGMA_EPS_YRANGE = [0.0, 1000.0]   # MPa
+CHARPY_XRANGE = [-200.0, 300.0]    # °C
+CHARPY_YRANGE = [0.0, 350.0]       # J
+TTRANS_REF_J = 20.0                 # energía que define la Temperatura de Transición
+T_CREEP = 370.0                      # °C, umbral de daño por fluencia lenta
 
 # ----------------------------------------------------------------------
-# BASES DE DATOS DE MATERIAL
+# BASES DE DATOS
 # ----------------------------------------------------------------------
-GRADOS_ASME = {
+# Aceros NO ALEADOS (B.C.C. ferrítico-perlítico) — el usuario define %C
+GRADOS_NO_ALEADOS = {
     "SA-516 Gr 60": {"sy": 220.0, "su": 415.0},
     "SA-516 Gr 70": {"sy": 260.0, "su": 485.0},
+    "SA-515 Gr 60": {"sy": 220.0, "su": 400.0},
+    "SA-515 Gr 65": {"sy": 240.0, "su": 450.0},
+    "SA-515 Gr 70": {"sy": 260.0, "su": 485.0},
 }
 
-# Multiplicadores según familia cristalográfica / metalúrgica
-MATERIALES = {
-    "Aceros al Carbono (B.C.C.)": {
-        "sy_mult": 1.00, "su_mult": 1.00, "duct_mult": 1.00, "charpy": "bcc",
+# Aceros ALEADOS — norma fija, no dependen del slider de %C
+GRADOS_ALEADOS = {
+    "AISI 4140 (martensítico, temple y revenido)": {
+        "sy": 750.0, "su": 950.0, "e_max": 0.16, "n": 0.08,
+        "charpy_J": 15.0, "familia": "mart", "pc_nominal": 0.40,
     },
-    "Aceros Inoxidables (F.C.C.)": {
-        "sy_mult": 0.90, "su_mult": 0.95, "duct_mult": 1.80, "charpy": "fcc",
+    "AISI 4340 (martensítico, temple y revenido)": {
+        "sy": 850.0, "su": 980.0, "e_max": 0.13, "n": 0.07,
+        "charpy_J": 12.0, "familia": "mart", "pc_nominal": 0.40,
     },
-    "Alta Resistencia (Martensíticos)": {
-        "sy_mult": 1.60, "su_mult": 1.40, "duct_mult": 0.40, "charpy": "mart",
+    "Inoxidable AISI 304 (F.C.C. austenítico)": {
+        "sy": 215.0, "su": 505.0, "e_max": 0.55, "n": 0.40,
+        "charpy_J": 180.0, "familia": "fcc", "pc_nominal": 0.06,
+    },
+    "Inoxidable AISI 316 (F.C.C. austenítico)": {
+        "sy": 205.0, "su": 515.0, "e_max": 0.52, "n": 0.42,
+        "charpy_J": 190.0, "familia": "fcc", "pc_nominal": 0.05,
     },
 }
-
-C_REF = 0.20  # %C de referencia sobre el cual están dados los valores base del grado ASME
 
 
 # ----------------------------------------------------------------------
-# MODELOS FÍSICOS SIMPLIFICADOS
+# AJUSTES POR COMPOSICIÓN Y TEMPERATURA
 # ----------------------------------------------------------------------
-def ajustar_por_carbono(sy0, su0, pc):
-    """Sube sy y su, y baja drásticamente la ductilidad al aumentar %C."""
+def ajustar_por_carbono_bcc(sy0, su0, pc):
+    """No aleados: sy y su suben con %C; la ductilidad y el exponente de
+    endurecimiento (n) bajan (menos capacidad de acritud remanente)."""
     sy_c = sy0 + 150.0 * (pc - C_REF)
     su_c = su0 + 300.0 * (pc - C_REF)
-    e_max_base = 0.35 - 0.40 * (pc - 0.10)
-    e_max_base = max(e_max_base, 0.03)
-    return sy_c, su_c, e_max_base
+    e_max = max(0.35 - 0.40 * (pc - 0.10), 0.03)
+    n_hard = 0.25 - 0.10 * ((pc - 0.10) / 0.70)   # 0.25 (bajo %C) -> 0.15 (alto %C)
+    return sy_c, su_c, e_max, n_hard
 
 
-def ajustar_por_temperatura(sy, su, e_max, ttrab, tipo_charpy):
-    """Ablanda/fragiliza el material según la temperatura de trabajo."""
+def ajustar_por_temperatura(sy, su, e_max, ttrab, familia):
+    """Ablanda a alta T; fragiliza en frío (fuerte en BCC/mart, casi nulo en FCC)."""
     if ttrab >= 20:
-        # Ablandamiento térmico: baja resistencia, sube ductilidad
         factor_resist = max(0.30, 1 - 0.0012 * (ttrab - 20))
         factor_duct = 1 + 0.0018 * (ttrab - 20)
     else:
         delta = abs(ttrab - 20)
-        if tipo_charpy == "fcc":
-            # Los F.C.C. (austeníticos) NO fragilizan en frío
+        if familia == "fcc":
             factor_resist = 1 + 0.0004 * delta
-            factor_duct = max(0.75, 1 - 0.0004 * delta)
+            factor_duct = max(0.80, 1 - 0.0004 * delta)
         else:
-            # B.C.C. y martensíticos: fragilización marcada en frío
             factor_resist = 1 + 0.0009 * delta
-            factor_duct = max(0.02, 1 - 0.0065 * delta)
+            factor_duct = max(0.05, 1 - 0.0060 * delta)
 
-    sy_final = sy * factor_resist
-    su_final = max(su * factor_resist, sy_final * 1.02)
-    e_max_final = max(e_max * factor_duct, 0.002)
-    return sy_final, su_final, e_max_final
+    sy_f = sy * factor_resist
+    su_f = max(su * factor_resist, sy_f * 1.02)
+    # Límite de seguridad visual: el eje Y del gráfico σ-ε está fijo en 0-1000 MPa
+    su_f = min(su_f, 980.0)
+    sy_f = min(sy_f, su_f * 0.95)
+    e_max_f = min(max(e_max * factor_duct, 0.005), 0.58)
+    return sy_f, su_f, e_max_f
 
 
-def generar_curva_tension_deformacion(sy, su, e_max):
-    """Genera curva ingenieril (convencional) y curva real hasta carga máxima."""
+# ----------------------------------------------------------------------
+# CURVA TENSIÓN–DEFORMACIÓN ARMÓNICA (Ludwik/Hollomon + Bridgman)
+# ----------------------------------------------------------------------
+def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.65):
+    """
+    Devuelve strain, stress_eng, stress_true (mismo tamaño, N_POINTS),
+    junto con e_u_eng (deformación de carga máxima) y un flag de si hubo
+    estricción o la rotura ocurrió antes de alcanzar la carga máxima.
+    La curva termina EXACTAMENTE en e_max (punto de fractura); no se
+    dibuja nada más allá.
+    """
     e_y = sy / E_MOD
+    strain = np.linspace(0.0, e_max, N_POINTS)
+    stress_eng = np.zeros(N_POINTS)
+    stress_true = np.zeros(N_POINTS)
 
-    # Caso frágil puro: casi no hay tramo plástico
-    if e_max <= e_y * 1.15:
-        strain = np.linspace(0, e_max, 300)
-        stress = np.minimum(E_MOD * strain, su)
-        e_u = e_max
-    else:
-        e_u = e_y + 0.55 * (e_max - e_y)  # punto de carga máxima (inicio de estricción)
+    # --- Caso 1: fractura frágil pura (rompe dentro de la zona elástica) ---
+    if e_max <= e_y:
+        stress_eng[:] = E_MOD * strain
+        stress_true[:] = stress_eng * (1 + strain)
+        return strain, stress_eng, stress_true, e_max, e_y, False
 
-        # Tramo elástico
-        strain_elastica = np.linspace(0, e_y, 60)
-        stress_elastica = E_MOD * strain_elastica
+    # --- Parámetros de Ludwik/Hollomon: σ_true = σy + K·εp^n ---
+    e_y_true = np.log(1 + e_y)
+    e_u_true_total = e_y_true + n_hard              # Considère: εp,u ≈ n
+    e_u_eng = np.exp(e_u_true_total) - 1.0           # deformación ingenieril en UTS
+    su_true_objetivo = su * np.exp(e_u_true_total)   # σ_true en la carga máxima
+    K_hard = (su_true_objetivo - sy) / (n_hard ** n_hard)
 
-        # Tramo plástico de endurecimiento hasta UTS
-        strain_plastica = np.linspace(e_y, e_u, 160)[1:]
-        frac = (strain_plastica - e_y) / (e_u - e_y)
-        stress_plastica = sy + (su - sy) * np.sqrt(frac)
+    hay_estriccion = e_max > e_u_eng
 
-        # Tramo post-UTS: estricción / caída de tensión ingenieril hasta rotura
-        strain_estriccion = np.linspace(e_u, e_max, 100)[1:]
-        stress_rotura = su * 0.70
-        frac2 = (strain_estriccion - e_u) / (e_max - e_u + 1e-9)
-        stress_estriccion = su - (su - stress_rotura) * frac2
+    # --- Tramo elástico (Hooke) ---
+    m_el = strain <= e_y
+    stress_eng[m_el] = E_MOD * strain[m_el]
+    stress_true[m_el] = stress_eng[m_el] * (1 + strain[m_el])
 
-        strain = np.concatenate([strain_elastica, strain_plastica, strain_estriccion])
-        stress = np.concatenate([stress_elastica, stress_plastica, stress_estriccion])
+    if not hay_estriccion:
+        # --- Caso 2: rotura dentro de la zona de endurecimiento uniforme ---
+        m_pl = strain > e_y
+        e_true_tot = np.log(1 + strain[m_pl])
+        e_p_true = np.clip(e_true_tot - e_y_true, 0, None)
+        s_true = sy + K_hard * (e_p_true ** n_hard)
+        stress_true[m_pl] = s_true
+        stress_eng[m_pl] = s_true / (1 + strain[m_pl])
+        stress_eng = np.minimum(stress_eng, 999.0)
+        stress_true = np.minimum(stress_true, 999.0)
+        return strain, stress_eng, stress_true, e_max, e_y, False
 
-    # Curva real, válida solo hasta el punto de carga máxima (e_u)
-    mask_real = strain <= e_u
-    strain_real = np.log(1 + strain[mask_real])
-    stress_real = stress[mask_real] * (1 + strain[mask_real])
+    # --- Caso 3: curva completa, con estricción hasta la fractura ---
+    m_unif = (strain > e_y) & (strain <= e_u_eng)
+    e_true_tot_u = np.log(1 + strain[m_unif])
+    e_p_true_u = np.clip(e_true_tot_u - e_y_true, 0, None)
+    s_true_u = sy + K_hard * (e_p_true_u ** n_hard)
+    stress_true[m_unif] = s_true_u
+    stress_eng[m_unif] = s_true_u / (1 + strain[m_unif])
 
-    return strain, stress, strain_real, stress_real, e_u, e_y
+    m_neck = strain > e_u_eng
+    # Convencional: decaimiento suave (smoothstep, derivada nula en ambos extremos)
+    sigma_fractura = su * sigma_fract_frac
+    frac = (strain[m_neck] - e_u_eng) / (e_max - e_u_eng + 1e-9)
+    frac = np.clip(frac, 0, 1)
+    smooth = 3 * frac**2 - 2 * frac**3
+    stress_eng[m_neck] = su - (su - sigma_fractura) * smooth
+
+    # Real: continúa el endurecimiento + corrección por triaxialidad (Bridgman aprox.)
+    e_true_tot_n = np.log(1 + strain[m_neck])
+    e_p_true_n = e_true_tot_n - e_y_true
+    s_true_base = sy + K_hard * (e_p_true_n ** n_hard)
+    factor_bridgman = 1 + 0.40 * (e_p_true_n - n_hard)
+    stress_true[m_neck] = s_true_base * factor_bridgman
+
+    # Límite de seguridad visual: el eje Y del gráfico está fijo en 0-1000 MPa
+    stress_eng = np.minimum(stress_eng, 999.0)
+    stress_true = np.minimum(stress_true, 999.0)
+
+    return strain, stress_eng, stress_true, e_u_eng, e_y, True
 
 
-def generar_curva_charpy(pc, tipo_charpy):
-    """Genera energía absorbida (J) vs temperatura (°C) según familia metalúrgica."""
-    temps = np.linspace(-200, 500, 400)
+# ----------------------------------------------------------------------
+# CURVA CHARPY ARMÓNICA (energía vs temperatura)
+# ----------------------------------------------------------------------
+def generar_curva_charpy(pc, familia, charpy_ref=None):
+    temps = np.linspace(CHARPY_XRANGE[0], CHARPY_XRANGE[1], N_POINTS)
 
-    if tipo_charpy == "bcc":
-        t_trans = -50 + 300 * (pc - 0.10)             # se corre a la derecha con %C
-        ancho = 20 + 40 * (pc - 0.10) / 0.70           # se suaviza (ensancha) con %C
-        use = 150 - 50 * (pc - 0.10) / 0.70            # el escalón superior baja algo
+    if familia == "bcc":
+        # Desplazamiento fluido: +14°C por cada 0.1% de Carbono
+        t_trans = -60.0 + 140.0 * (pc - 0.10)
+        ancho = 25.0 + 25.0 * ((pc - 0.10) / 0.70)          # se ensancha con %C
+        use = 300.0 - 180.0 * ((pc - 0.10) / 0.70)           # escalón superior baja con %C
         lse = 10.0
-        energia = (use + lse) / 2 + (use - lse) / 2 * np.tanh((temps - t_trans) / ancho)
+
+        # Se calcula T0 (centro de la sigmoidal) para que E(t_trans) = 20 J exactos
+        arg = (2 * TTRANS_REF_J - use - lse) / (use - lse)
+        arg = np.clip(arg, -0.999, 0.999)
+        t0 = t_trans - ancho * np.arctanh(arg)
+
+        energia = (use + lse) / 2 + (use - lse) / 2 * np.tanh((temps - t0) / ancho)
         return temps, energia, t_trans
 
-    if tipo_charpy == "fcc":
-        energia = np.full_like(temps, 180.0) - 0.05 * np.clip(-temps, 0, None)
+    if familia == "fcc":
+        plateau = charpy_ref if charpy_ref else 180.0
+        low_end = max(plateau - 50.0, 120.0)
+        amp = plateau - low_end
+        energia = plateau - amp * np.exp(-(temps + 200.0) / 150.0)
         return temps, energia, None
 
-    # martensítico: siempre bajo, prácticamente plano
-    energia = np.full_like(temps, 15.0) + 0.01 * np.clip(temps, 0, None) * 0
+    # martensítico: meseta baja, siempre < 20 J, con leve variación (no perfectamente recta)
+    base_j = charpy_ref if charpy_ref else 15.0
+    energia = np.clip(base_j + 0.01 * (temps - 20.0), 3.0, 19.0)
     return temps, energia, None
 
 
 def energia_en_temperatura(temps, energia, ttrab):
+    if ttrab < temps[0] or ttrab > temps[-1]:
+        return None
     return float(np.interp(ttrab, temps, energia))
 
 
 # ----------------------------------------------------------------------
-# SIDEBAR — ENTRADAS DEL USUARIO
+# SIDEBAR
 # ----------------------------------------------------------------------
 st.sidebar.header("⚙️ Parámetros del Material")
 
-material_tipo = st.sidebar.selectbox(
-    "Tipo de Material",
-    list(MATERIALES.keys()),
+tipo_acero = st.sidebar.radio(
+    "Familia de Acero",
+    ["No Aleado (calcular por %C)", "Aleado (norma fija)"],
 )
 
-pct_c = st.sidebar.slider(
-    "Contenido de Carbono (%C)",
-    min_value=0.10, max_value=0.80, value=0.20, step=0.01,
-    format="%.2f %%",
-)
+if tipo_acero.startswith("No Aleado"):
+    grado_base = st.sidebar.selectbox("Grado base (Norma ASME)", list(GRADOS_NO_ALEADOS.keys()))
+    pct_c = st.sidebar.slider("Contenido de Carbono (%C)", 0.10, 0.80, 0.20, 0.01, format="%.2f %%")
+
+    base = GRADOS_NO_ALEADOS[grado_base]
+    sy_c, su_c, e_max_c, n_hard = ajustar_por_carbono_bcc(base["sy"], base["su"], pct_c)
+    familia = "bcc"
+    charpy_ref = None
+    nombre_material = f"{grado_base} (%C = {pct_c:.2f}%)"
+else:
+    grado_aleado = st.sidebar.selectbox("Grado", list(GRADOS_ALEADOS.keys()))
+    info = GRADOS_ALEADOS[grado_aleado]
+    sy_c, su_c, e_max_c = info["sy"], info["su"], info["e_max"]
+    n_hard = info["n"]
+    familia = info["familia"]
+    charpy_ref = info["charpy_J"]
+    pct_c = info["pc_nominal"]
+    st.sidebar.caption(f"%C nominal de referencia: {pct_c:.2f}% (fijo, no editable)")
+    nombre_material = grado_aleado
 
 ttrab = st.sidebar.number_input(
-    "Temperatura de Trabajo (Ttrab) [°C]",
-    min_value=-200, max_value=500, value=20, step=5,
-)
-
-grado_base = st.sidebar.radio(
-    "Grado base (Referencia ASME)",
-    list(GRADOS_ASME.keys()),
+    "Temperatura de Trabajo (Ttrab) [°C]", min_value=-200, max_value=500, value=20, step=5
 )
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Los valores del grado ASME seleccionado se toman como referencia a %C = 0.20 "
-    "y luego se ajustan por composición, familia metalúrgica y temperatura de servicio."
+    "Los ejes de ambos gráficos están fijos para permitir comparar directamente "
+    "distintos materiales y condiciones de temperatura/composición."
 )
 
 # ----------------------------------------------------------------------
 # CÁLCULOS
 # ----------------------------------------------------------------------
-mat_info = MATERIALES[material_tipo]
-base = GRADOS_ASME[grado_base]
+sy_final, su_final, e_max_final = ajustar_por_temperatura(sy_c, su_c, e_max_c, ttrab, familia)
 
-sy_c, su_c, e_max_c = ajustar_por_carbono(base["sy"], base["su"], pct_c)
-
-sy_c *= mat_info["sy_mult"]
-su_c *= mat_info["su_mult"]
-e_max_c *= mat_info["duct_mult"]
-e_max_c = min(max(e_max_c, 0.01), 0.60)
-
-sy_final, su_final, e_max_final = ajustar_por_temperatura(
-    sy_c, su_c, e_max_c, ttrab, mat_info["charpy"]
+strain, stress_eng, stress_true, e_u_eng, e_y, hay_estriccion = generar_curva_tension_deformacion(
+    sy_final, su_final, e_max_final, n_hard
 )
 
-strain, stress, strain_real, stress_real, e_u, e_y = generar_curva_tension_deformacion(
-    sy_final, su_final, e_max_final
-)
-
-temps, energia, t_trans = generar_curva_charpy(pct_c, mat_info["charpy"])
+temps, energia, t_trans = generar_curva_charpy(pct_c, familia, charpy_ref)
 energia_ttrab = energia_en_temperatura(temps, energia, ttrab)
 
 # ----------------------------------------------------------------------
 # ENCABEZADO
 # ----------------------------------------------------------------------
 st.title("🔩 Simulador de Comportamiento Mecánico de Materiales")
-st.markdown(
-    f"**Material:** {material_tipo} &nbsp;|&nbsp; **%C:** {pct_c:.2f}% &nbsp;|&nbsp; "
-    f"**Grado base:** {grado_base} &nbsp;|&nbsp; **Ttrab:** {ttrab} °C"
-)
+st.markdown(f"**Material:** {nombre_material} &nbsp;|&nbsp; **Ttrab:** {ttrab} °C")
 
-col_metric1, col_metric2, col_metric3 = st.columns(3)
-col_metric1.metric("σy (Límite Elástico)", f"{sy_final:,.0f} MPa")
-col_metric2.metric("σu (Resistencia Máxima)", f"{su_final:,.0f} MPa")
-col_metric3.metric("Alargamiento máx. estimado", f"{e_max_final*100:,.1f} %")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("σy (Límite Elástico)", f"{sy_final:,.0f} MPa")
+c2.metric("σu (Resistencia Máxima)", f"{su_final:,.0f} MPa")
+c3.metric("Alargamiento a rotura", f"{e_max_final*100:,.1f} %")
+c4.metric("Exponente n (Hollomon)", f"{n_hard:.2f}")
 
 st.markdown("---")
 
@@ -225,139 +292,166 @@ st.subheader("1️⃣ Curva Tensión – Deformación (σ vs ε)")
 
 fig1 = go.Figure()
 fig1.add_trace(go.Scatter(
-    x=strain * 100, y=stress, mode="lines", name="Curva Convencional (ingenieril)",
-    line=dict(color="#1f77b4", width=3),
+    x=strain, y=stress_eng, mode="lines", name="Curva Convencional (ingenieril)",
+    line=dict(color="#1f77b4", width=3, shape="spline", smoothing=0.3),
 ))
 fig1.add_trace(go.Scatter(
-    x=strain_real * 100, y=stress_real, mode="lines", name="Curva Real (verdadera)",
-    line=dict(color="#d62728", width=3, dash="dash"),
+    x=strain, y=stress_true, mode="lines", name="Curva Real (verdadera, con corrección de triaxialidad)",
+    line=dict(color="#d62728", width=3, dash="dash", shape="spline", smoothing=0.3),
 ))
+if hay_estriccion:
+    fig1.add_trace(go.Scatter(
+        x=[e_u_eng], y=[su_final], mode="markers+text",
+        marker=dict(size=11, color="black", symbol="x"),
+        text=["UTS"], textposition="top center", name="Carga Máxima (necking)",
+    ))
 fig1.add_trace(go.Scatter(
-    x=[e_u * 100], y=[np.interp(e_u, strain, stress)], mode="markers+text",
-    marker=dict(size=10, color="black", symbol="x"),
-    text=["σu"], textposition="top center", name="Carga Máxima (UTS)",
+    x=[strain[-1]], y=[stress_eng[-1]], mode="markers+text",
+    marker=dict(size=11, color="#7f0000", symbol="star"),
+    text=["Fractura"], textposition="bottom right", name="Punto de Fractura",
 ))
 fig1.update_layout(
-    xaxis_title="Deformación ε [%]",
-    yaxis_title="Tensión σ [MPa]",
+    xaxis=dict(title="Deformación ε [mm/mm]", range=SIGMA_EPS_XRANGE),
+    yaxis=dict(title="Tensión σ [MPa]", range=SIGMA_EPS_YRANGE),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-    height=480,
-    margin=dict(t=30),
+    height=500, margin=dict(t=30),
 )
 st.plotly_chart(fig1, use_container_width=True)
 
-with st.expander("📘 Fundamento teórico — Curva σ-ε"):
+with st.expander("📘 Fundamento teórico — Curva σ-ε armónica"):
     st.markdown(
         r"""
-La **curva convencional (ingenieril)** se calcula con la sección transversal
-*original* de la probeta: $\sigma_c = F/A_0$, $\varepsilon = \Delta L/L_0$.
+**Zona elástica:** Ley de Hooke, $\sigma = E \cdot \varepsilon$, hasta $\sigma_y$.
 
-La **curva real** tiene en cuenta la reducción de área durante la deformación
-plástica, y es válida solo hasta el punto de carga máxima (inicio de la
-estricción), donde deja de ser homogénea:
+**Zona plástica uniforme:** ecuación de Ludwik (variante de Hollomon con offset de
+fluencia para continuidad perfecta con la zona elástica):
 
-$$\sigma_r = \sigma_c \cdot (\varepsilon + 1) \qquad \varepsilon_r = \ln(\varepsilon + 1)$$
+$$\sigma_{real} = \sigma_y + K \cdot \varepsilon_{p}^{\,n}$$
 
-A mayor **%C**, suben σy y σu pero la ductilidad cae fuertemente (fragilización
-por carburos/perlita). A **alta temperatura** (~400 °C) el material se ablanda
-y se vuelve más dúctil; a **muy baja temperatura** (~-190 °C) los aceros B.C.C.
-y martensíticos rompen de forma frágil, casi sin deformación plástica previa.
+donde $\varepsilon_p$ es la deformación real plástica y $n$ el exponente de
+endurecimiento (aceros al carbono: $n \approx 0.15$–$0.25$; inoxidables F.C.C.:
+$n \approx 0.40$, mayor capacidad de acritud). El punto de carga máxima (UTS) se
+ubica, por el criterio de Considère, donde $\varepsilon_{p} \approx n$.
 
-> *"Mirar + Conocimiento = Ver"* — antes de interpretar cualquier curva
-> tensión-deformación es indispensable la **inspección visual** de la
-> probeta ensayada (tipo de fractura, presencia de estricción, superficie de
-> rotura) para validar si el comportamiento fue dúctil o frágil.
+**Post-estricción:** la tensión convencional decae suavemente (sin tramos
+rectos) por la reducción real de sección, mientras que la tensión real sigue
+creciendo, corregida por el estado triaxial de tensiones en el cuello
+(aproximación tipo Bridgman/Von Mises).
+
+**Punto de fractura:** la curva finaliza exactamente en el alargamiento máximo
+calculado; no se grafica nada posterior a la rotura.
+
+> *"Mirar + Conocimiento Técnico = Ver"* — antes de interpretar la curva, la
+> **inspección visual** de la probeta (estricción, superficie de fractura)
+> confirma si el comportamiento fue dúctil o frágil.
         """
     )
 
 st.markdown("---")
 
 # ----------------------------------------------------------------------
-# GRÁFICO 2 — ENERGÍA ABSORBIDA vs TEMPERATURA (CHARPY)
+# GRÁFICO 2 — CHARPY
 # ----------------------------------------------------------------------
 st.subheader("2️⃣ Energía Absorbida vs Temperatura (Ensayo Charpy)")
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(
     x=temps, y=energia, mode="lines", name="Energía absorbida",
-    line=dict(color="#2ca02c", width=3),
+    line=dict(color="#2ca02c", width=3, shape="spline", smoothing=0.3),
 ))
-fig2.add_trace(go.Scatter(
-    x=[ttrab], y=[energia_ttrab], mode="markers+text",
-    marker=dict(size=13, color="#d62728", symbol="circle"),
-    text=[f"Ttrab = {ttrab}°C"], textposition="top center",
-    name="Temperatura de Trabajo",
-))
+fig2.add_hline(
+    y=TTRANS_REF_J, line_dash="dot", line_color="gray",
+    annotation_text=f"{TTRANS_REF_J:.0f} J — referencia de Ttrans", annotation_position="bottom right",
+)
 if t_trans is not None:
-    fig2.add_vline(x=t_trans, line_dash="dot", line_color="gray",
-                    annotation_text=f"Ttrans ≈ {t_trans:.0f}°C", annotation_position="top")
+    fig2.add_vline(
+        x=t_trans, line_dash="dot", line_color="firebrick",
+        annotation_text=f"Ttrans ≈ {t_trans:.0f}°C", annotation_position="top",
+    )
+if energia_ttrab is not None:
+    fig2.add_trace(go.Scatter(
+        x=[ttrab], y=[energia_ttrab], mode="markers+text",
+        marker=dict(size=13, color="#d62728", symbol="circle"),
+        text=[f"Ttrab = {ttrab}°C"], textposition="top center", name="Temperatura de Trabajo",
+    ))
+else:
+    st.caption(
+        f"⚠️ Ttrab ({ttrab} °C) está fuera del rango típico de ensayo Charpy "
+        f"({CHARPY_XRANGE[0]:.0f} a {CHARPY_XRANGE[1]:.0f} °C) y no se marca en el gráfico."
+    )
 
 fig2.update_layout(
-    xaxis_title="Temperatura [°C]",
-    yaxis_title="Energía Absorbida [J]",
+    xaxis=dict(title="Temperatura [°C]", range=CHARPY_XRANGE),
+    yaxis=dict(title="Energía Absorbida [J]", range=CHARPY_YRANGE),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-    height=480,
-    margin=dict(t=30),
+    height=500, margin=dict(t=30),
 )
 st.plotly_chart(fig2, use_container_width=True)
 
-with st.expander("📘 Fundamento teórico — Curva Charpy"):
+with st.expander("📘 Fundamento teórico — Curva Charpy armónica"):
     st.markdown(
         r"""
-Los aceros **B.C.C.** presentan una **transición dúctil-frágil** modelada con
-una función sigmoidal (tangente hiperbólica), cuyo punto de inflexión es la
-**Temperatura de Transición** ($T_{trans}$). Al aumentar el %C, la curva se
-desplaza hacia la **derecha** (fragilización a temperaturas más altas) y se
-**suaviza** (transición menos abrupta).
+**B.C.C. (no aleados):** transición dúctil-frágil modelada con una función
+tangente hiperbólica de alta resolución. La **Temperatura de Transición**
+($T_{trans}$) se define como el punto donde la energía absorbida alcanza
+**20 J**. Al aumentar el %C, la curva se desplaza **+14°C por cada 0.1%C** y
+se ensancha (transición menos abrupta).
 
-Los aceros **F.C.C.** (inoxidables austeníticos) no presentan transición:
-mantienen alta energía absorbida incluso a temperaturas criogénicas.
+**F.C.C. (inoxidables 304/316):** sin clivaje, energía siempre alta (>120 J),
+con una leve pendiente positiva y saturación suave a mayor temperatura — no
+existe una transición dúctil-frágil real.
 
-Los aceros **martensíticos** de alta resistencia son intrínsecamente frágiles
-en todo el rango de temperaturas (baja energía absorbida constante).
+**Martensíticos (AISI 4140/4340):** tenacidad baja y prácticamente constante
+(<20 J) en todo el rango de temperatura: son intrínsecamente frágiles.
 
-> *"Mirar + Conocimiento = Ver"* — la **inspección visual** de la superficie de
-> fractura de la probeta Charpy (brillante/cristalina vs. fibrosa/mate) es el
-> primer diagnóstico, previo a cualquier cálculo, del modo de falla dúctil o
-> frágil.
+> *"Mirar + Conocimiento Técnico = Ver"* — la superficie de fractura de la
+> probeta Charpy (brillante/cristalina = frágil vs. fibrosa/mate = dúctil) es
+> el primer diagnóstico visual, previo a cualquier cálculo.
         """
     )
 
 # ----------------------------------------------------------------------
-# ALERTA DE SEGURIDAD
+# DIAGNÓSTICO DE SEGURIDAD ESTRUCTURAL
 # ----------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🚨 Diagnóstico de Seguridad Estructural")
 
-if mat_info["charpy"] == "bcc":
+alertas_mostradas = False
+
+if familia == "bcc":
     if ttrab < t_trans:
         st.error(
-            f"⚠️ **RIESGO DE FALLA FRÁGIL CATASTRÓFICA** — "
+            f"⚠️ **RIESGO DE FRACTURA FRÁGIL POR CLIVAJE** — "
             f"Ttrab ({ttrab} °C) < Ttrans ({t_trans:.0f} °C). "
-            f"El material se encuentra por debajo de su temperatura de transición: "
-            f"la energía absorbida es baja ({energia_ttrab:.0f} J) y la fractura "
-            f"esperada es de tipo frágil."
+            f"Energía absorbida estimada: {energia_ttrab:.0f} J." if energia_ttrab is not None
+            else f"⚠️ **RIESGO DE FRACTURA FRÁGIL POR CLIVAJE** — Ttrab ({ttrab} °C) < Ttrans ({t_trans:.0f} °C)."
         )
     else:
         st.success(
-            f"✅ **COMPORTAMIENTO DÚCTIL SEGURO** — "
-            f"Ttrab ({ttrab} °C) ≥ Ttrans ({t_trans:.0f} °C). "
-            f"Energía absorbida estimada: {energia_ttrab:.0f} J."
+            f"✅ **COMPORTAMIENTO DÚCTIL SEGURO** — Ttrab ({ttrab} °C) ≥ Ttrans ({t_trans:.0f} °C)."
+            + (f" Energía absorbida estimada: {energia_ttrab:.0f} J." if energia_ttrab is not None else "")
         )
-elif mat_info["charpy"] == "fcc":
+    alertas_mostradas = True
+elif familia == "fcc":
     st.success(
-        f"✅ **COMPORTAMIENTO DÚCTIL SEGURO** — Los aceros inoxidables austeníticos "
-        f"(F.C.C.) no presentan transición dúctil-frágil; se mantienen dúctiles "
-        f"incluso a temperaturas criogénicas. Energía absorbida estimada: "
-        f"{energia_ttrab:.0f} J."
+        "✅ **COMPORTAMIENTO DÚCTIL SEGURO** — Estructura F.C.C. austenítica: sin "
+        "transición dúctil-frágil, dúctil incluso a temperaturas criogénicas."
     )
+    alertas_mostradas = True
 else:  # martensítico
     st.warning(
-        f"⚠️ **MATERIAL INTRÍNSECAMENTE FRÁGIL** — Los aceros martensíticos de alta "
-        f"resistencia presentan baja tenacidad en todo el rango de temperatura "
-        f"(energía absorbida estimada: {energia_ttrab:.0f} J), independientemente "
-        f"de Ttrab. Se recomienda extremar el control de defectos y concentradores "
-        f"de tensión."
+        "⚠️ **MATERIAL INTRÍNSECAMENTE FRÁGIL** — Tenacidad baja y constante "
+        "(<20 J) en todo el rango de temperatura; extremar el control de "
+        "defectos y concentradores de tensión."
+    )
+    alertas_mostradas = True
+
+if ttrab > T_CREEP:
+    st.warning(
+        f"🔥 **MECANISMO DE DAÑO POR CREEP (FLUENCIA LENTA)** — Ttrab ({ttrab} °C) "
+        f"supera los {T_CREEP:.0f} °C: a esta temperatura el material puede sufrir "
+        f"deformación progresiva bajo carga sostenida, independientemente del "
+        f"resultado del ensayo de impacto."
     )
 
 st.caption(
