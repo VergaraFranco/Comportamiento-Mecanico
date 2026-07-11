@@ -276,6 +276,44 @@ def propiedades_martensita_revenida(t_revenido, grado):
 
 
 # ----------------------------------------------------------------------
+# CRITERIO DE CONSIDÈRE — RESOLUCIÓN NUMÉRICA REAL (no aproximada)
+# ----------------------------------------------------------------------
+def _maximo_curva_ingenieril(sy, K, n_hard, e_y_true, strain_grid):
+    """Dado K (coef. de Ludwik), devuelve el máximo de la curva ingenieril
+    sobre la grilla de deformaciones y dónde ocurre (deformación y tensión
+    real en ese punto)."""
+    e_true_tot = np.log(1 + strain_grid)
+    e_p_true = np.clip(e_true_tot - e_y_true, 0, None)
+    s_true = sy + K * (e_p_true ** n_hard)
+    s_eng = s_true / (1 + strain_grid)
+    idx = int(np.argmax(s_eng))
+    return s_eng[idx], strain_grid[idx], s_true[idx]
+
+
+def resolver_considere_real(sy, su_objetivo, n_hard, e_y_true, e_max_busqueda=0.6, n_grid=3000, iters=40):
+    """Encuentra, por bisección sobre K, el coeficiente de endurecimiento de
+    Ludwik tal que el MÁXIMO REAL de la curva ingenieril (criterio de
+    Considère aplicado numéricamente, sin aproximar la deformación uniforme
+    como ε_true=n) coincida con el σu de norma. Con offset de fluencia
+    (σ = σy + K·εₚⁿ) el punto de Considère NO cae exactamente en ε_true=n;
+    esa aproximación (válida solo para Hollomon puro, sin offset) es la que
+    generaba un UTS mal ubicado y una zona de estricción antinaturalmente
+    angosta en versiones anteriores."""
+    strain_grid = np.linspace(1e-6, e_max_busqueda, n_grid)
+    K_lo, K_hi = 1.0, 50_000.0
+    for _ in range(iters):
+        K_mid = 0.5 * (K_lo + K_hi)
+        s_eng_max, _, _ = _maximo_curva_ingenieril(sy, K_mid, n_hard, e_y_true, strain_grid)
+        if s_eng_max < su_objetivo:
+            K_lo = K_mid
+        else:
+            K_hi = K_mid
+    K_final = 0.5 * (K_lo + K_hi)
+    s_eng_max, eps_uts, s_true_uts = _maximo_curva_ingenieril(sy, K_final, n_hard, e_y_true, strain_grid)
+    return K_final, eps_uts, s_eng_max, s_true_uts
+
+
+# ----------------------------------------------------------------------
 # CURVA TENSIÓN–DEFORMACIÓN ARMÓNICA (Ludwik/Hollomon + Bridgman)
 # ----------------------------------------------------------------------
 def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.65):
@@ -290,10 +328,11 @@ def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.
         return strain, stress_eng, stress_true, e_max, e_y, False
 
     e_y_true = np.log(1 + e_y)
-    e_u_true_total = e_y_true + n_hard
-    e_u_eng = np.exp(e_u_true_total) - 1.0
-    su_true_objetivo = su * np.exp(e_u_true_total)
-    K_hard = (su_true_objetivo - sy) / (n_hard ** n_hard)
+    K_hard, e_u_eng, su_eng_real, su_true_real = resolver_considere_real(
+        sy, su, n_hard, e_y_true, e_max_busqueda=max(e_max, 0.6)
+    )
+    # su_eng_real coincide (por construcción) con `su`; se usa su_true_real
+    # como la tensión REAL en el punto de carga máxima para la curva roja.
 
     hay_estriccion = e_max > e_u_eng
 
