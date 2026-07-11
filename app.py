@@ -28,7 +28,7 @@ N_POINTS = 500        # resolución fina para curvas armónicas
 
 # Ejes fijos para comparación visual entre materiales/condiciones
 SIGMA_EPS_XRANGE = [0.0, 0.6]       # deformación
-# SIGMA_EPS_YRANGE = [0.0, 2000.0]    # MPa (ampliado para cubrir martensita revenida hasta ~1970 MPa)
+SIGMA_EPS_YRANGE = [0.0, 2000.0]    # MPa (ampliado para cubrir martensita revenida hasta ~1970 MPa)
 SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo del eje
 CHARPY_XRANGE = [-200.0, 300.0]      # °C
 CHARPY_YRANGE = [0.0, 350.0]         # J
