@@ -365,10 +365,17 @@ def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.
     smooth = 3 * frac**2 - 2 * frac**3
     stress_eng[m_neck] = su - (su - sigma_fractura) * smooth
 
+    # Deformación real verdadera en el punto de inicio de la estricción (UTS
+    # real, resuelto numéricamente arriba) — es la referencia correcta para
+    # el factor de Bridgman, NO n_hard. Usar n_hard aquí (como antes) asumía
+    # que el cuello arranca en ε_true=n, aproximación que dejó de valer al
+    # resolver Considère numéricamente, y generaba un salto discontinuo en
+    # la tensión real justo en el punto de UTS.
+    ep_true_uts = np.log(1 + e_u_eng) - e_y_true
     e_true_tot_n = np.log(1 + strain[m_neck])
     e_p_true_n = e_true_tot_n - e_y_true
     s_true_base = sy + K_hard * (e_p_true_n ** n_hard)
-    factor_bridgman = 1 + 0.40 * (e_p_true_n - n_hard)
+    factor_bridgman = 1 + 0.40 * (e_p_true_n - ep_true_uts)
     stress_true[m_neck] = s_true_base * factor_bridgman
 
     stress_eng = np.minimum(stress_eng, SIGMA_CLIP)
