@@ -394,7 +394,13 @@ def generar_curva_charpy(familia, pc=None, pm=0.0, charpy_ref=None, hcp_info=Non
         # Ttrans = Ttrans_base + 140·%C − 55·%Mn (definida en el punto de 20 J)
         t_trans = TTRANS_BASE_BCC + 140.0 * pc - 55.0 * pm
         ancho = 25.0 + 25.0 * ((pc - 0.10) / 0.70)
-        use = 300.0 - 180.0 * ((pc - 0.10) / 0.70)
+        # Meseta superior (Upper Shelf) DINÁMICA — Fig. 26/27 de la cátedra:
+        # el %C es un fuertísimo fragilizador que hunde la energía de la
+        # meseta dúctil (de ~320 J a ~50 J entre 0.01% y 0.67% C), mientras
+        # que el %Mn aporta tenacidad y la eleva ligeramente. Antes esta
+        # meseta era estática y solo Ttrans se movía con la composición.
+        use = 300.0 - 500.0 * pc + 30.0 * pm
+        use = float(np.clip(use, 50.0, 350.0))
         lse = 10.0
         energia = _tanh_con_ttrans_en_20j(temps, t_trans, ancho, use, lse)
         return temps, energia, t_trans
@@ -406,7 +412,7 @@ def generar_curva_charpy(familia, pc=None, pm=0.0, charpy_ref=None, hcp_info=Non
         return temps, energia, hcp_info["t_trans"]
 
     if familia == "fcc":
-        plateau = charpy_ref if charpy_ref else 180.0
+        plateau = charpy_ref if charpy_ref else 190.0
         low_end = max(plateau - 50.0, 120.0)
         amp = plateau - low_end
         energia = plateau - amp * np.exp(-(temps + 200.0) / 150.0)
@@ -487,7 +493,7 @@ if categoria == "Aceros No Aleados":
             sy_aust, su_aust, e_max_aust, ttrab, "fcc", n_aust
         )
         familia_calculo = "fcc"
-        charpy_ref = 150.0
+        charpy_ref = 200.0  # FCC: energía alta y ~constante (>180 J), tenacidad casi independiente de T
 
     temps, energia, t_trans = generar_curva_charpy(familia_calculo, pc=pct_c, pm=pct_mn, charpy_ref=charpy_ref)
 
@@ -713,9 +719,14 @@ with st.expander("📘 Fundamento teórico — Curva Charpy armónica"):
 dúctil-frágil (tanh de alta resolución). La **Temperatura de Transición**
 ($T_{trans}$) se define donde la energía absorbida alcanza **20 J**. En los
 no aleados, $T_{trans} = T_{trans,base} + 140\cdot\%C - 55\cdot\%Mn$: el
-carbono la sube y el **manganeso la baja** (mejora la tenacidad). Los H.C.P.
-transicionan por tener solo **2 sistemas de deslizamiento** disponibles.
-**F.C.C. (inoxidables 304/316):** sin clivaje, energía siempre alta (>120 J),
+carbono la sube y el **manganeso la baja** (mejora la tenacidad). Además, el
+%C y el %Mn ya NO solo desplazan la transición: también fijan la **altura de
+la Meseta Superior** (Upper Shelf), $E_{max,BCC} = 300 - 500\cdot\%C +
+30\cdot\%Mn$ — el carbono es un fragilizador fuerte que hunde la energía
+disponible incluso en la zona dúctil (de ~320 J a ~50 J entre 0.01% y 0.67%C),
+mientras que el manganeso la eleva ligeramente. Los H.C.P. transicionan por
+tener solo **2 sistemas de deslizamiento** disponibles.
+**F.C.C. (inoxidables 304/316):** sin clivaje, energía siempre alta (>180 J),
 con saturación suave — no existe transición dúctil-frágil real.
 **Martensíticos (AISI 4140/4340):** tenacidad baja y prácticamente constante
 (<20 J): son intrínsecamente frágiles, independientemente de Ttrab.
@@ -782,6 +793,15 @@ if es_acero_actual and comp_actual.get("C", 0) > 0:
             f"introduce el carbono; se recomienda subir %Mn o bajar %C para "
             f"mejorar la tenacidad al impacto."
         )
+
+# --- Doble Factor de Riesgo: alto %C desplaza Ttrans Y hunde la meseta superior ---
+if categoria == "Aceros No Aleados" and pct_c > 0.30:
+    st.error(
+        "⚠️ **Doble Factor de Riesgo:** El elevado contenido de Carbono no solo "
+        "desplaza la fragilidad a temperaturas más altas, sino que reduce "
+        "drásticamente la capacidad de absorción de energía incluso en la zona "
+        "dúctil (caída de la Meseta Superior)."
+    )
 
 # --- Alerta de Creep (Fluencia Lenta) ---
 if ttrab > T_CREEP:
