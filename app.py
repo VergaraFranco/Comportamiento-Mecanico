@@ -362,7 +362,15 @@ def generar_curva_tension_deformacion(sy, su, e_max, n_hard, sigma_fract_frac=0.
     sigma_fractura = su * sigma_fract_frac
     frac = (strain[m_neck] - e_u_eng) / (e_max - e_u_eng + 1e-9)
     frac = np.clip(frac, 0, 1)
-    smooth = 3 * frac**2 - 2 * frac**3
+    # Descenso post-UTS: se usa frac² (ease-in puro) en vez de un smoothstep
+    # simétrico (3f²-2f³). El smoothstep simétrico tiene pendiente CERO tanto
+    # al iniciar el cuello COMO al llegar a la fractura, lo que aplana la
+    # curva justo antes de romper — al revés de la física real, donde la
+    # caída de tensión ingenieril se ACELERA a medida que la sección resistente
+    # se reduce cada vez más rápido. frac² mantiene la pendiente nula solo al
+    # inicio (continuidad suave con el máximo de UTS) y crece monótonamente
+    # hasta el final, dando una caída que se acelera hacia la fractura.
+    smooth = frac**2
     stress_eng[m_neck] = su - (su - sigma_fractura) * smooth
 
     # Deformación real verdadera en el punto de inicio de la estricción (UTS
