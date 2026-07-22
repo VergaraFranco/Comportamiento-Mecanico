@@ -823,7 +823,7 @@ if ttrab > T_CREEP:
 
 limite_prueba = 0.90 * sy_final
 st.info(
-    f"🛑 **Prueba Hidráulica** — la tensión aplicada durante cualquier prueba de "
+    f"🛑 La tensión aplicada durante cualquier prueba de "
     f"carga no debe superar el **90% de σy** ({limite_prueba:,.0f} MPa) para "
     f"evitar deformación permanente del componente."
 )
