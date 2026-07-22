@@ -48,7 +48,7 @@ N_POINTS = 500        # resolución fina para curvas armónicas
 
 # Ejes fijos para comparación visual entre materiales/condiciones
 SIGMA_EPS_XRANGE = [0.0, 0.6]       # deformación
-SIGMA_CLIP = 1980.0                  # tope de seguridad visual, justo debajo del eje más amplio
+SIGMA_CLIP = 2050.0                  # tope de seguridad visual, justo debajo del eje más amplio
 
 SIGMA_YRANGE_DEFAULT = [0.0, 1000.0]
 SIGMA_YRANGE_ALTA_RESISTENCIA = [0.0, 2000.0]
@@ -794,7 +794,7 @@ else:
         "defectos y concentradores de tensión, sin importar Ttrab."
     )
 
-if es_acero_actual and comp_actual.get("C", 0) > 0:
+if categoria == "Aceros No Aleados" and comp_actual.get("C", 0) > 0:
     mn_c_ratio = comp_actual["Mn"] / comp_actual["C"]
     if mn_c_ratio < 3.0:
         st.warning(
@@ -837,4 +837,3 @@ st.info(
 )
 
 st.markdown("---")
-
