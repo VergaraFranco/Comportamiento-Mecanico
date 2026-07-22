@@ -828,11 +828,6 @@ st.info(
     f"evitar deformación permanente del componente."
 )
 
-st.caption(
-    "Modelo didáctico simplificado con fines educativos — los valores numéricos "
-    "no reemplazan ensayos normalizados (ASTM E8, ASTM E23) ni códigos de diseño "
-    "(ASME, API)."
-)
 
 st.info(
     "Esta herramienta es un apoyo visual didáctico para facilitar la "
@@ -842,7 +837,4 @@ st.info(
 )
 
 st.markdown("---")
-st.markdown(
-    "<h3 style='text-align:center;color:#1f77b4;'>👁️ MIRAR + CONOCIMIENTO TÉCNICO = VER</h3>",
-    unsafe_allow_html=True,
-)
+
