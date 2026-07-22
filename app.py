@@ -643,7 +643,7 @@ reales de tracción.
 
 Esta aplicación busca ayudar a "ver" las tendencias metalúrgicas, pero no debe
 utilizarse como referencia absoluta para reemplazar los datos de precisión de
-la normativa ASME, ASTM E8 o criterios específicos de examen.
+la normativa ASME, ASTM E8.
         """
     )
 
@@ -838,8 +838,7 @@ st.info(
     "Esta herramienta es un apoyo visual didáctico para facilitar la "
     "incorporación de saberes. Los valores son estimaciones basadas en modelos "
     "matemáticos y tendencias generales; no representan ensayos reales de "
-    "laboratorio y no deben usarse como referencia absoluta para diseño o "
-    "criterios de examen."
+    "laboratorio y no deben usarse como referencia absoluta para diseño."
 )
 
 st.markdown("---")
