@@ -51,7 +51,7 @@ SIGMA_EPS_XRANGE = [0.0, 0.6]       # deformación
 SIGMA_CLIP = 2050.0                  # tope de seguridad visual, justo debajo del eje más amplio
 
 SIGMA_YRANGE_DEFAULT = [0.0, 1000.0]
-SIGMA_YRANGE_ALTA_RESISTENCIA = [0.0, 2000.0]
+SIGMA_YRANGE_ALTA_RESISTENCIA = [0.0, 2500.0]
 
 CHARPY_XRANGE = [-200.0, 300.0]      # °C
 CHARPY_YRANGE = [0.0, 350.0]         # J
