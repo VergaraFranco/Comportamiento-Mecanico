@@ -140,7 +140,7 @@ def calcular_mn_maximo_permitido(grado_data: dict, pct_c: float) -> float:
     return min(grado_data["mn_cap"], grado_data["mn_nom_max"] + extra_mn)
 
 
-def mostrar_bloque_composicion(nombre_material: str, comp: dict, es_acero: bool = True):
+def mostrar_bloque_composicion(nombre_material: str, comp: dict, es_acero: bool = True, mostrar_ce: bool = True):
     st.markdown("### 🧪 Composición Química Teórica")
     col_tabla, col_ce = st.columns([2, 1])
 
@@ -156,15 +156,24 @@ def mostrar_bloque_composicion(nombre_material: str, comp: dict, es_acero: bool 
         )
         with col_tabla:
             st.table(df_comp.set_index("Elemento"))
-        ce = calcular_carbono_equivalente(comp)
-        with col_ce:
-            st.metric("Carbono Equivalente (CE)", f"{ce:.3f}")
-            if ce < 0.40:
-                st.success("Buena soldabilidad: bajo riesgo de fisuración en frío, sin precalentamiento crítico.")
-            elif ce < 0.60:
-                st.warning("Soldabilidad moderada: se recomienda precalentamiento y control de aporte térmico.")
-            else:
-                st.error("Baja soldabilidad: alto riesgo de fisuración en frío (HAZ). Precalentamiento obligatorio.")
+        if mostrar_ce:
+            ce = calcular_carbono_equivalente(comp)
+            with col_ce:
+                st.metric("Carbono Equivalente (CE)", f"{ce:.3f}")
+                if ce < 0.40:
+                    st.success("Buena soldabilidad: bajo riesgo de fisuración en frío, sin precalentamiento crítico.")
+                elif ce < 0.60:
+                    st.warning("Soldabilidad moderada: se recomienda precalentamiento y control de aporte térmico.")
+                else:
+                    st.error("Baja soldabilidad: alto riesgo de fisuración en frío (HAZ). Precalentamiento obligatorio.")
+        else:
+            with col_ce:
+                st.info(
+                    "El Carbono Equivalente (CE) es una fórmula metalúrgica de soldabilidad "
+                    "válida para aceros ferríticos Fe-C; no aplica a aceros inoxidables "
+                    "austeníticos (no forman martensita en la ZAC, mecanismo de fisuración "
+                    "en frío distinto)."
+                )
     else:
         df_comp = pd.DataFrame([comp])
         with col_tabla:
@@ -215,10 +224,6 @@ def ajustar_por_temperatura(sy, su, e_max, ttrab, familia, n_hard=None):
         return sy_f, su_f, e_max_f
     n_f = float(np.clip(n_hard * factor_duct, 0.03, 0.60))
     return sy_f, su_f, e_max_f, n_f
-
-
-
-
 
 
 def _maximo_curva_ingenieril(sy, K, n_hard, e_y_true, strain_grid):
@@ -384,6 +389,7 @@ if categoria == "Aceros No Aleados":
 
     comp_actual = {"C": pct_c, "Mn": pct_mn, "Ni": 0.00, "Cr": 0.00, "Mo": 0.00, "Cu": 0.00, "V": 0.00}
     es_acero_actual = True
+    mostrar_ce_actual = True
 
     if fase == "bcc":
         sy_final, su_final, e_max_final, n_hard = ajustar_por_temperatura(
@@ -432,6 +438,7 @@ elif categoria == "Aceros Aleados de Alta Resistencia":
 
     comp_actual = COMPOSICION_ALTA_RESISTENCIA[grado_aleado]
     es_acero_actual = True
+    mostrar_ce_actual = True
 
 elif categoria == "Aceros Inoxidables":
     grado_inox = st.sidebar.selectbox("Grado", list(GRADOS_INOXIDABLES.keys()))
@@ -448,6 +455,7 @@ elif categoria == "Aceros Inoxidables":
 
     comp_actual = COMPOSICION_INOXIDABLES[grado_inox]
     es_acero_actual = True
+    mostrar_ce_actual = False
 
 else:
     grado_hcp = st.sidebar.selectbox("Material", list(MATERIALES_HCP.keys()))
@@ -464,6 +472,7 @@ else:
 
     comp_actual = COMPOSICION_HCP[grado_hcp]
     es_acero_actual = False
+    mostrar_ce_actual = True
 
 energia_ttrab = energia_en_temperatura(temps, energia, ttrab)
 
@@ -509,7 +518,7 @@ st.info(
 
 st.markdown("---")
 
-mostrar_bloque_composicion(nombre_material, comp_actual, es_acero=es_acero_actual)
+mostrar_bloque_composicion(nombre_material, comp_actual, es_acero=es_acero_actual, mostrar_ce=mostrar_ce_actual)
 
 if categoria == "Aceros No Aleados":
     if pct_mn > mn_max_permitido:
